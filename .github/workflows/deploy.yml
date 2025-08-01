@@ -1,0 +1,196 @@
+name: Provisioner and Deploy
+
+on:
+    push:
+        branches:
+            - main
+            - staging
+    workflow_dispatch:
+        inputs:
+            ami_id:
+                description: "ID da AMI"
+                required: true
+            environment:
+                description: The environment to destroy
+                type: choice
+                required: true
+                options:
+                    - prod
+                    - staging
+
+
+jobs:
+    resolve-env:
+        runs-on: ubuntu-latest
+        outputs:
+            resolved_env: ${{ steps.setenv.outputs.environment }}
+        steps:
+            - name: Set environment name
+              id: setenv
+              run: |
+                if [[ "${GITHUB_REF##*/}" == "main" ]]; then
+                    echo "environment=prod" >> $GITHUB_OUTPUT
+                else
+                    echo "environment=staging" >> $GITHUB_OUTPUT
+                fi
+            
+
+    build-ami:
+        runs-on: ubuntu-latest
+        if: github.event_name != 'workflow_dispatch'
+        needs: resolve-env
+        env:
+            PACKER_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        outputs:
+            ami_id: ${{ steps.packer_build.outputs.ami_id }}
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Setup `packer`
+              uses: hashicorp/setup-packer@main
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4.1.0
+              with:
+                aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                aws-region: ${{ secrets.AWS_REGION }}
+
+            - name: Run Packer Init
+              run: |
+                packer init ./packer/aws-ubuntu.pkr.hcl
+
+            - name: Run Packer Validate
+              run: |
+                packer validate \
+                  -var "environment=${{ needs.resolve-env.outputs.resolved_env }}" \
+                  -var "aws_region=${{ secrets.AWS_REGION }}" \
+                  ./packer/aws-ubuntu.pkr.hcl
+
+            - name: Run Packer Build
+              id: packer_build
+              run: |
+                TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+                packer build -machine-readable -color=false \
+                  -var "environment=${{ needs.resolve-env.outputs.resolved_env }}" \
+                  -var "aws_region=${{ secrets.AWS_REGION }}" \
+                  -var "ami_name=learn-packer-linux-aws-redis-msg-${TIMESTAMP}" \
+                  ./packer/aws-ubuntu.pkr.hcl | tee packer.log
+
+                if ! grep -q 'artifact,0,id' packer.log; then
+                  echo "Error: No AMI was created by Packer."
+                  cat packer.log
+                  exit 1
+                fi
+
+                # Extracts the AMI ID from the format: us-east-1:ami-05b538971c43f6344
+                ami_id=$(grep 'artifact,0,id,${{ secrets.AWS_REGION}}' packer.log | cut -d, -f6 | cut -d: -f2)
+                echo "AMI created: $ami_id"
+                echo "ami_id=$ami_id" >> $GITHUB_OUTPUT
+
+
+
+    infra:
+        runs-on: ubuntu-latest
+        if: github.event_name != 'workflow_dispatch'
+        needs: [resolve-env, build-ami]
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4.1.0
+              with:
+                aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                aws-region: ${{ secrets.AWS_REGION }}
+
+            - name: Set up Terraform
+              uses: hashicorp/setup-terraform@v2
+
+            - name: Initialize Terraform
+              working-directory: ./infra
+              run: |
+                terraform init \
+                    -backend-config="bucket=${{ secrets.AWS_S3_BUCKET_NAME }}" \
+                    -backend-config="key=envs/${{ needs.resolve-env.outputs.resolved_env }}/terraform.tfstate" \
+                    -backend-config="region=${{ secrets.AWS_REGION }}" \
+                    -backend-config="encrypt=true" \
+                    -backend-config="use_lockfile=true"
+
+            - name: Terraform Format
+              working-directory: ./infra
+              run: terraform fmt -check
+
+            - name: Terraform Validate
+              working-directory: ./infra
+              run: terraform validate
+
+            - name: Terraform Plan
+              working-directory: ./infra
+              run: |
+                terraform plan -out=plan.out \
+                  -var "aws_region=${{ secrets.AWS_REGION }}" \
+                  -var "ami_id=${{ needs.build-ami.outputs.ami_id }}" \
+                  -var "environment=${{ needs.resolve-env.outputs.resolved_env }}" \
+                  -var-file="environments/${{ needs.resolve-env.outputs.resolved_env }}/terraform.tfvars"
+
+            - name: Terraform Apply
+              working-directory: ./infra
+              run: terraform apply -auto-approve plan.out
+
+            - name: Force Instance Refresh
+              run: |
+                aws autoscaling start-instance-refresh \
+                  --auto-scaling-group-name "asg-${{ needs.resolve-env.outputs.resolved_env }}" \
+                  --region ${{ secrets.AWS_REGION }}
+
+    destroy:
+        runs-on: ubuntu-latest
+        needs: resolve-env
+        if: github.event_name == 'workflow_dispatch'
+        steps:
+          - name: Checkout code
+            uses: actions/checkout@v4
+
+          - name: Configure AWS credentials
+            uses: aws-actions/configure-aws-credentials@v4.1.0
+            with:
+              aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+              aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+              aws-region: ${{ secrets.AWS_REGION }}
+
+          - name: Set up Terraform
+            uses: hashicorp/setup-terraform@v2
+
+          - name: Initialize Terraform
+            working-directory: ./infra
+            run: |
+              terraform init \
+                  -backend-config="bucket=${{ secrets.AWS_S3_BUCKET_NAME }}" \
+                  -backend-config="key=envs/${{ github.event.inputs.environment }}/terraform.tfstate" \
+                  -backend-config="region=${{ secrets.AWS_REGION }}" \
+                  -backend-config="encrypt=true" \
+                  -backend-config="use_lockfile=true"
+
+          - name: Terraform Format
+            working-directory: ./infra
+            run: terraform fmt -check
+
+          - name: Terraform Validate
+            working-directory: ./infra
+            run: terraform validate
+
+          - name: Terraform Plan Destroy
+            working-directory: ./infra
+            run: |
+              terraform plan -destroy -out=destroy-plan.out \
+                -var "aws_region=${{ secrets.AWS_REGION }}" \
+                -var "ami_id=${{ github.event.inputs.ami_id }}" \
+                -var "environment=${{ github.event.inputs.environment }}" \
+                -var-file="environments/${{ github.event.inputs.environment }}/terraform.tfvars"
+
+          - name: Terraform Destroy
+            working-directory: ./infra
+            run: terraform apply -auto-approve destroy-plan.out
