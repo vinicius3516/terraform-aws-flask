@@ -1,10 +1,10 @@
-# 🚀 Terraform AWS Flask App (High Availability Infra)
+# Terraform AWS Flask App (High Availability Infra)
 
 Este projeto demonstra como provisionar uma aplicação Flask com Redis e Docker na AWS, utilizando **Terraform** com boas práticas de modularização, pipelines GitHub Actions e **infraestrutura altamente disponível** com Auto Scaling e Application Load Balancer.
 
 ---
 
-## 📌 Visão Geral
+> ## Visão Geral
 
 ![Arquitetura](img/arquitetura.png)
 
@@ -22,7 +22,7 @@ A infraestrutura é composta por:
 
 ---
 
-## 🛠️ Tecnologias Utilizadas
+> ## Tecnologias Utilizadas
 
 - **Terraform** (modular e reutilizável)
 - **AWS** (EC2, ALB, ASG, VPC, S3, NAT Gateway)
@@ -33,7 +33,7 @@ A infraestrutura é composta por:
 
 ---
 
-## 🧱 Estrutura do Projeto
+> ## Estrutura do Projeto
 
 ```bash
 ├── app                      # Código da aplicação Flask + Redis
@@ -60,17 +60,17 @@ A infraestrutura é composta por:
 │
 └── README.md
 ```
-## 🧬 Fluxo DevOps
+> ## Fluxo DevOps
 
-## 1. 🔒 Backend Remoto  
+### 1. Backend Remoto  
 Ao iniciar o projeto, uma pipeline `remote-backend.yml` é executada para provisionar um bucket S3 remoto, usado como backend seguro para os estados do Terraform. Confira o projeto [`remote-backend.yml`](https://github.com/vinicius3516/terraform-bootstrap).
 
-## 2. 🏗️ Criação da AMI (via GitHub Actions)  
+### 2. Criação da AMI (via GitHub Actions)  
 Usa o **Packer** para construir uma AMI customizada contendo Docker, Redis, dependências Python e a aplicação Flask.
 
 A AMI é nomeada com timestamp e armazenada para reutilização.
 
-## 3. ☁️ Provisionamento da Infra (Terraform)  
+### 3. Provisionamento da Infra (Terraform)  
 Pipelines `deploy.yml` são responsáveis por criar ou destruir toda a infraestrutura.
 
 A modularização separa responsabilidades como:
@@ -79,12 +79,12 @@ A modularização separa responsabilidades como:
 - `alb`
 - `asg`
 
-## 4. 🌐 Deploy e Alta Disponibilidade  
+### 4. Deploy e Alta Disponibilidade  
 - O **ALB** redireciona tráfego para instâncias em múltiplas **AZs**.  
 - O **ASG** gerencia a escala automática das instâncias EC2.  
 - **Subnets privadas** garantem maior segurança para os workloads.
 
-## 🔄 Pipelines GitHub Actions
+> ## Pipelines GitHub Actions
 
 - `remote-backend.yml`: Cria o backend remoto no S3.
 
@@ -92,5 +92,5 @@ A modularização separa responsabilidades como:
 
 **Deploys** são disparados ao fazer push nas branches `main` (prod) ou `staging`.
 
-## 🌐 Acesso à Aplicação
-> Após o provisionamento, a URL pública da aplicação estará disponível como output do Terraform (via DNS do ALB).
+> ## Acesso à Aplicação
+Após o provisionamento, a URL pública da aplicação estará disponível como output do Terraform (via DNS do ALB).
